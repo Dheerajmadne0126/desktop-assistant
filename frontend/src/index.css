@@ -1,0 +1,151 @@
+@import "tailwindcss";
+
+body {
+  @apply bg-[#050a14] text-[#00e5ff] font-mono m-0 p-0 overflow-hidden;
+}
+
+.crt-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  pointer-events: none;
+  z-index: 50;
+  background: linear-gradient(rgba(18, 16, 16, 0) 50%,
+      rgba(0, 0, 0, 0.25) 50%);
+  background-size: 100% 4px;
+  opacity: 0.8;
+}
+
+.glow-text {
+  text-shadow: 0 0 5px rgba(0, 229, 255, 0.7), 0 0 10px rgba(0, 229, 255, 0.5);
+}
+
+/* J.A.R.V.I.S HUD Styles */
+.hud-container {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 350px;
+  height: 350px;
+}
+
+.hud-ring {
+  position: absolute;
+  border-radius: 50%;
+  box-sizing: border-box;
+}
+
+.hud-outer {
+  width: 320px;
+  height: 320px;
+  border: 2px solid rgba(0, 229, 255, 0.1);
+  border-top: 4px solid rgba(0, 229, 255, 0.7);
+  border-bottom: 4px solid rgba(0, 229, 255, 0.7);
+  border-left: 2px dashed rgba(0, 229, 255, 0.4);
+  border-right: 2px dashed rgba(0, 229, 255, 0.4);
+  animation: spin-hud 15s linear infinite;
+}
+
+.hud-middle {
+  width: 270px;
+  height: 270px;
+  border: 4px solid rgba(0, 229, 255, 0.2);
+  border-left-color: transparent;
+  border-right-color: transparent;
+  animation: spin-hud-reverse 8s linear infinite;
+}
+
+.hud-inner {
+  width: 220px;
+  height: 220px;
+  border: 3px dashed rgba(0, 229, 255, 0.5);
+  border-top-color: transparent;
+  animation: spin-hud 5s linear infinite;
+}
+
+.hud-core {
+  width: 150px;
+  height: 150px;
+  border-radius: 50%;
+  border: 2px solid rgba(0, 229, 255, 0.8);
+  background: rgba(0, 229, 255, 0.05);
+  box-shadow: 0 0 25px rgba(0, 229, 255, 0.4), inset 0 0 25px rgba(0, 229, 255, 0.2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  z-index: 10;
+  cursor: pointer;
+  transition: all 0.3s ease;
+}
+
+.hud-text {
+  font-size: 1.2rem;
+  font-weight: bold;
+  letter-spacing: 0.3em;
+  color: #00e5ff;
+  text-shadow: 0 0 10px rgba(0, 229, 255, 0.9);
+}
+
+/* Dynamic States */
+.hud-container.listening .hud-core {
+  border-color: #ff003c;
+  box-shadow: 0 0 35px rgba(255, 0, 60, 0.8), inset 0 0 30px rgba(255, 0, 60, 0.5);
+  animation: pulse-listen 1s infinite alternate;
+}
+.hud-container.listening .hud-text {
+  color: #ff003c;
+  text-shadow: 0 0 10px rgba(255, 0, 60, 0.9);
+}
+
+.hud-container.thinking .hud-inner {
+  animation: spin-hud 1s linear infinite;
+  border-color: #f7ca18;
+}
+.hud-container.thinking .hud-core {
+  border-color: #f7ca18;
+  box-shadow: 0 0 25px rgba(247, 202, 24, 0.6);
+}
+.hud-container.thinking .hud-text {
+  color: #f7ca18;
+  text-shadow: 0 0 10px rgba(247, 202, 24, 0.9);
+}
+
+.hud-container.speaking .hud-core {
+  animation: pulse-speak 0.4s infinite alternate;
+  box-shadow: 0 0 40px rgba(0, 229, 255, 0.8), inset 0 0 30px rgba(0, 229, 255, 0.5);
+}
+
+@keyframes spin-hud { 100% { transform: rotate(360deg); } }
+@keyframes spin-hud-reverse { 100% { transform: rotate(-360deg); } }
+
+@keyframes pulse-listen {
+  0% { transform: scale(1); }
+  100% { transform: scale(1.1); }
+}
+
+@keyframes pulse-speak {
+  0% { transform: scale(1); opacity: 0.8; }
+  100% { transform: scale(1.05); opacity: 1; }
+}
+
+/* Custom Scrollbar for terminal logs */
+::-webkit-scrollbar {
+  width: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #050705;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #00e5ff;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #00cc33;
+}
