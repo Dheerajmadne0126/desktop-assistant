@@ -62,9 +62,11 @@ class Database:
             return False
 
     async def ensure_schema(self) -> None:
-        """Auto-heals fresh/switched databases by applying pending migrations.
+        """Auto-heals by applying pending Alembic migrations.
 
-        Runs only when the core schema is missing, so normal boots cost nothing.
+        Runs on a fresh/switched database (core tables missing) or whenever the
+        DB is behind the head revision, so new migrations (e.g. the mobile
+        tables) apply automatically on the next boot.
         """
         try:
             from sqlalchemy import inspect as sa_inspect
@@ -74,12 +76,29 @@ class Database:
                 has_core = await conn.run_sync(
                     lambda sc: sa_inspect(sc).has_table("preferences")
                 )
-            if has_core:
+                has_versions = await conn.run_sync(
+                    lambda sc: sa_inspect(sc).has_table("alembic_version")
+                )
+                current = None
+                if has_versions:
+                    row = (
+                        await conn.execute(
+                            text("SELECT version_num FROM alembic_version")
+                        )
+                    ).first()
+                    current = row[0] if row else None
+
+            head = self._head_revision()
+            # Skip DBs created via Base.metadata.create_all (no alembic_version
+            # table): those are test/scratch databases, not migration-managed.
+            needs_migration = (not has_core) or (
+                has_versions and head is not None and current != head
+            )
+            if not needs_migration:
                 return
 
             logger.warning(
-                "Core tables missing (fresh or switched database). "
-                "Applying migrations automatically…"
+                "Applying Alembic migrations (%s -> %s)…", current or "fresh", head
             )
             await asyncio.to_thread(self._run_alembic_upgrade)
             async with self.engine.connect() as conn:
@@ -89,6 +108,17 @@ class Database:
             logger.error(
                 "Auto-migration failed. Run manually: alembic upgrade head (%s)", exc
             )
+
+    @staticmethod
+    def _head_revision() -> str | None:
+        from pathlib import Path
+
+        from alembic.script import ScriptDirectory
+
+        backend_root = Path(__file__).resolve().parents[2]
+        script = ScriptDirectory(str(backend_root / "migrations"))
+        heads = script.get_heads()
+        return heads[0] if heads else None
 
     @staticmethod
     def _run_alembic_upgrade() -> None:

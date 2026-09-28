@@ -23,7 +23,13 @@ class VectorStore:
         return self._ready
 
     def warmup(self) -> bool:
-        return self._initialize()
+        ready = self._initialize()
+        if ready and self._embeddings:
+            try:
+                self._embeddings.embed_query("warmup")
+            except Exception:
+                pass
+        return ready
 
     def _initialize(self) -> bool:
         if self._ready:
@@ -38,7 +44,7 @@ class VectorStore:
                 from qdrant_client import QdrantClient
                 from qdrant_client.http.models import Distance, VectorParams
 
-                client = QdrantClient(url=settings.qdrant_url, timeout=4)
+                client = QdrantClient(url=settings.qdrant_url, timeout=1.0)
                 collections = [c.name for c in client.get_collections().collections]
                 self._collection = settings.qdrant_collection
                 if self._collection not in collections:
@@ -62,7 +68,7 @@ class VectorStore:
             return self._ready
 
     def add(self, text: str, metadata: Optional[dict] = None) -> Optional[uuid.UUID]:
-        if not self._initialize():
+        if not self._ready:
             return None
         point_id = uuid.uuid4()
         try:
@@ -78,7 +84,7 @@ class VectorStore:
             return None
 
     def search(self, query: str, k: int = 4):
-        if not self._initialize():
+        if not self._ready:
             return []
         try:
             docs_with_scores = self._store.similarity_search_with_relevance_scores(

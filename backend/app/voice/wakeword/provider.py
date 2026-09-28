@@ -120,14 +120,15 @@ class WakeWordListener:
                     if len(self.recent_scores) > 60:
                         del self.recent_scores[: len(self.recent_scores) - 60]
 
-                    # Adaptive rule: instant fire on a strong chunk, OR a rising
-                    # pattern (mean of last 3 near-threshold) catches accents
+                    # Adaptive rule: instant fire on a strong chunk, OR a sustained
+                    # pattern (mean of last 3 well above threshold) catches accents
                     # where a single chunk never crosses the line.
+                    # Require mean > 0.85 * threshold and min > 0.5 * threshold.
                     window = list(self._score_window)
                     rising = (
                         len(window) == 3
-                        and sum(window) / 3 > self.threshold * 0.6
-                        and min(window) > self.threshold * 0.25
+                        and sum(window) / 3 > self.threshold * 0.85
+                        and min(window) > self.threshold * 0.5
                     )
                     if (best_score > self.threshold or rising) and (
                         now - self._last_fire > self.cooldown_s

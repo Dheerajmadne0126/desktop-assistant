@@ -25,16 +25,36 @@ def compute_rms(pcm_bytes: bytes) -> float:
 
 
 class EnergyVAD:
-    """Live noise-floor tracking with hysteresis. No manual calibration steps."""
+    """Live noise-floor tracking with hysteresis. No manual calibration steps.
+
+    End-of-speech is judged against BOTH the noise floor AND the speech peak:
+    energy must drop below ~20% of the loudest speech heard this phrase (or
+    below the noise-relative release line) before the phrase can end. That
+    keeps capture snappy in rooms where ambient noise sits close to the
+    noise floor — otherwise JARVIS keeps "listening" to background noise
+    long after the user stopped talking.
+    """
 
     def __init__(self, factor_above_noise: float = 2.4, floor: int = 320) -> None:
         self.noise_floor = float(floor)
         self.factor = factor_above_noise
         self.speech_active = False
+        self._peak = 0.0
+        self.peak_release_ratio = 0.20
 
     @property
     def threshold(self) -> float:
         return max(self.noise_floor * self.factor, 480)
+
+    @property
+    def release_threshold(self) -> float:
+        noise_release = self.threshold * 0.7
+        peak_release = self._peak * self.peak_release_ratio
+        return max(noise_release, peak_release)
+
+    def reset(self) -> None:
+        self.speech_active = False
+        self._peak = 0.0
 
     def observe_idle(self, pcm_block: bytes) -> None:
         """Learns ambient noise ONLY from quiet blocks — never from speech or
@@ -46,11 +66,14 @@ class EnergyVAD:
     def process(self, pcm_block: bytes) -> bool:
         rms = compute_rms(pcm_block)
         if self.speech_active:
-            if rms < self.threshold * 0.7:
+            if rms > self._peak:
+                self._peak = rms
+            if rms < self.release_threshold:
                 self.speech_active = False
         else:
             if rms > self.threshold:
                 self.speech_active = True
+                self._peak = rms
         return self.speech_active
 
 
@@ -70,6 +93,7 @@ class PhraseRecorder:
         self.chunk = CHUNK_SAMPLES
         self.silence_limit_s = settings.phrase_silence_ms / 1000
         self.max_seconds = settings.phrase_max_seconds
+        self.no_speech_timeout_s = settings.phrase_no_speech_timeout_ms / 1000
         self.preroll_s = settings.phrase_preroll_ms / 1000
         self.vad = EnergyVAD()
 
@@ -104,7 +128,7 @@ class PhraseRecorder:
 
     def record_phrase(self, timeout: float | None = None) -> bytes | None:
         self._preroll.clear()
-        self.vad.speech_active = False
+        self.vad.reset()
         self.hub.set_capture(True)
         try:
             timeout = timeout or (self.max_seconds + 3)
@@ -118,6 +142,7 @@ class PhraseRecorder:
         block_bytes = self.chunk * 2
         chunks_per_second = self.sample_rate / self.chunk
         silence_chunks_limit = max(1, int(self.silence_limit_s * chunks_per_second))
+        no_speech_chunks_limit = max(1, int(self.no_speech_timeout_s * chunks_per_second))
 
         preroll: deque = deque(maxlen=self._preroll_chunks)
         capturing = False
@@ -173,8 +198,10 @@ class PhraseRecorder:
                 capturing = True
                 speech_chunks = 0
                 silence_chunks = 0
-                preroll.clear()
+                # Copy the warm pre-roll BEFORE clearing it, so speech onset is
+                # never clipped out of the captured phrase.
                 collected = list(preroll)
+                preroll.clear()
                 logger.debug("Capture started.")
 
             if capturing:
@@ -185,11 +212,29 @@ class PhraseRecorder:
                     silence_chunks = 0
                 else:
                     silence_chunks += 1
+                    # Ambient can drift while we listen (fan cycles, AC).
+                    # observe_idle only ever moves the floor DOWN toward
+                    # genuinely quiet blocks, never up from loud ones.
+                    self.vad.observe_idle(block)
 
                 finished = (
                     (speech_chunks >= self._min_speech_chunks and silence_chunks >= silence_chunks_limit)
                     or len(collected) >= max_capture_chunks
                 )
+                if (
+                    speech_chunks == 0
+                    and silence_chunks >= no_speech_chunks_limit
+                ):
+                    # Nothing was said at all — stop quickly instead of
+                    # recording (and transcribing) up to max_seconds of noise.
+                    logger.debug(
+                        "Capture aborted: no speech within %.1fs.",
+                        self.no_speech_timeout_s,
+                    )
+                    collected = []
+                    capturing = False
+                    self._emit(None)
+                    continue
                 if finished:
                     wav = self._to_wav(collected)
                     collected = []

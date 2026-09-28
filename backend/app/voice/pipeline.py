@@ -29,6 +29,29 @@ _SLEEP_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Sentence terminators for incremental TTS: English/Hindi/Marathi all end
+# sentences on . ! ? and the Devanagari danda (।).
+_SENTENCE_END_RE = re.compile(r"[.!?\u0964]")
+
+
+def _extract_sentences(buffer: str) -> tuple[list[str], str]:
+    """Split accumulated text into complete sentences (ending . ! ? ।).
+
+    Returns (complete_sentences, remainder). The remainder is kept and joined
+    with the next streamed token, then flushed when streaming finishes.
+    """
+    sentences: list[str] = []
+    while True:
+        match = _SENTENCE_END_RE.search(buffer)
+        if not match:
+            break
+        end = match.end()
+        sentence = buffer[:end].strip()
+        buffer = buffer[end:]
+        if len(sentence) > 1:
+            sentences.append(sentence)
+    return sentences, buffer
+
 
 def is_sleep_command(text: str) -> bool:
     lowered = text.lower().strip()
@@ -126,6 +149,11 @@ class VoicePipeline:
             logger.info("Wake during speech ignored (half-duplex; use barge-in).")
             return
 
+        # Prevent wake word activation when already listening for command
+        if current == AgentState.LISTENING_FOR_COMMAND:
+            logger.info("Wake word ignored while already listening for command.")
+            return
+
         if current in (AgentState.IDLE, AgentState.LISTENING_FOR_WAKE_WORD):
             async with self._session_lock:
                 if self._session_task is not None and not self._session_task.done():
@@ -182,7 +210,7 @@ class VoicePipeline:
                     from app.voice import stt as stt_module
 
                     await self._handle_stt_failure(
-                        stt_module.last_failure_kind, language
+                        stt_module.last_failure_kind, "English"
                     )
 
                 if not text:
@@ -237,61 +265,18 @@ class VoicePipeline:
                 )
                 await event_bus.publish({"type": "transcription", "text": f"USER: {text}"})
 
-                await state_machine.set_state(AgentState.THINKING, "Thinking...")
-                self.wake_listener.suppress(True)
-                llm_t0 = time.perf_counter()
-                result = await self._process(text, request_id)
-                llm_ms = int((time.perf_counter() - llm_t0) * 1000)
-                logger.info("[%s] [RESPONSE] %dms %s", request_id, llm_ms, result.reply[:70])
-                self._remember_reply(result.reply)
-
-                await event_bus.publish(
-                    {"type": "transcription", "text": f"JARVIS: {result.reply}"}
-                )
-                await state_machine.set_state(AgentState.SPEAKING, "Responding...")
-
-                # Half-duplex guard: capture stays OFF while speaking so the
-                # collector can NEVER record JARVIS's own voice as a user phrase.
-                # Voice barge-in works via RMS monitoring on the raw feed instead.
-                self.wake_listener.suppress(True)
-
-                if get_settings().barge_in_enabled:
-                    self.recorder.set_barge_monitor(
-                        lambda: stop_speaking(), armed=True
-                    )
-
-                tts_t0 = time.perf_counter()
-                completed = await speak_text(result.reply, language=result.language)
-                tts_ms = int((time.perf_counter() - tts_t0) * 1000)
-
-                self.recorder.set_barge_monitor(None, armed=False)
-                self.hub.set_capture(False)
-                total_ms = int((time.perf_counter() - record_start) * 1000)
-                stats["stt"].append(stt_ms)
-                stats["llm"].append(llm_ms)
-                stats["tts"].append(tts_ms)
-                stats["turn"].append(total_ms)
-                logger.info(
-                    "[%s] [TIMING] stt=%dms llm=%dms tts=%dms turn=%dms",
-                    request_id,
-                    stt_ms,
-                    llm_ms,
-                    tts_ms,
-                    total_ms,
-                )
-
-                if not completed:
-                    logger.info("[%s] Speech interrupted; listening immediately.", request_id)
-                    continue
-
-                await asyncio.sleep(_ECHO_SETTLE_SECONDS)
-
+                # "go to sleep"/"stop listening"/"सो जा" closes the session
+                # immediately — no LLM round trip, no follow-up listening.
                 if is_sleep_command(text):
-                    ack = random_ack_sleep(result.language)
+                    from app.memory.service import memory_service
+
+                    pref = await memory_service.language_preference()
+                    ack_lang = pref if pref in ("Marathi", "Hindi") else "English"
+                    ack = random_ack_sleep(ack_lang)
                     await state_machine.set_state(AgentState.SPEAKING, "Sleeping")
                     self.wake_listener.suppress(True)
                     try:
-                        await speak_text(ack, language=result.language)
+                        await speak_text(ack, language=ack_lang)
                     finally:
                         self.wake_listener.suppress(False)
                     logger.info(
@@ -300,6 +285,133 @@ class VoicePipeline:
                         settings.wake_word_threshold,
                     )
                     break
+
+                self.wake_listener.suppress(True)
+                llm_t0 = time.perf_counter()
+
+                # Stream the LLM reply AND feed TTS sentence-by-sentence as the
+                # tokens arrive, so audio starts while the model is still
+                # generating the rest (previously we waited for the whole reply
+                # plus a full synthesis pass before the first sound).
+                completed = False
+                first_token = True
+                full_reply = ""
+                result = None
+                tts_queue: asyncio.Queue = asyncio.Queue()
+                tts_task: asyncio.Task | None = None
+                tts_ms = 0
+                sentence_buffer = ""
+
+                try:
+                    async for token in self._process_stream(text, request_id):
+                        if first_token:
+                            llm_ms = int((time.perf_counter() - llm_t0) * 1000)
+                            logger.info(
+                                "[%s] [RESPONSE] %dms %s", request_id, llm_ms, token[:70]
+                            )
+                            first_token = False
+                            await state_machine.set_state(
+                                AgentState.SPEAKING, "Responding..."
+                            )
+
+                            # The supervisor sets _last_language before the first
+                            # token is yielded, so the TTS worker can start right
+                            # away with the correct Marathi/Hindi/English voice.
+                            from app.ai.agent.supervisor import (
+                                supervisor as _agent_supervisor,
+                            )
+
+                            spoken_lang = getattr(
+                                _agent_supervisor, "_last_language", "English"
+                            ) or "English"
+                            tts_t0 = time.perf_counter()
+                            tts_task = asyncio.create_task(
+                                self._tts_worker(tts_queue, spoken_lang)
+                            )
+
+                        full_reply += token
+                        self._remember_reply(token)
+
+                        # Queue complete sentences for TTS immediately; the
+                        # worker synthesizes and plays each in order as ready.
+                        sentence_buffer += token
+                        sentences, sentence_buffer = _extract_sentences(
+                            sentence_buffer
+                        )
+                        for sentence in sentences:
+                            await tts_queue.put(sentence)
+
+                    # Publish the COMPLETE reply once streaming finishes; the
+                    # first token alone makes the dashboard show a truncated line.
+                    if full_reply.strip():
+                        await event_bus.publish(
+                            {
+                                "type": "transcription",
+                                "text": f"JARVIS: {full_reply.strip()}",
+                            }
+                        )
+
+                    if tts_task is None:
+                        # Nothing streamed (empty reply) — nothing to speak.
+                        completed = True
+                    else:
+                        # Flush the final partial sentence, then wait for the
+                        # worker to finish synthesizing + playing everything.
+                        if sentence_buffer.strip():
+                            await tts_queue.put(sentence_buffer.strip())
+                        await tts_queue.put(None)
+                        completed = await tts_task
+                        tts_ms = int((time.perf_counter() - tts_t0) * 1000)
+
+                except Exception as exc:
+                    logger.error("Streaming failed, falling back: %s", exc)
+                    from app.ai.agent.supervisor import process_text
+
+                    result = await process_text(
+                        text, source="voice", request_id=request_id
+                    )
+                    llm_ms = int((time.perf_counter() - llm_t0) * 1000)
+                    logger.info(
+                        "[%s] [RESPONSE] %dms %s", request_id, llm_ms, result.reply[:70]
+                    )
+                    full_reply = result.reply
+                    self._remember_reply(result.reply)
+                    await event_bus.publish(
+                        {"type": "transcription", "text": f"JARVIS: {result.reply}"}
+                    )
+                    await state_machine.set_state(AgentState.SPEAKING, "Responding...")
+                    tts_t0 = time.perf_counter()
+                    completed = await speak_text(result.reply, language=result.language)
+                    tts_ms = int((time.perf_counter() - tts_t0) * 1000)
+                finally:
+                    # If the turn was cancelled or failed, make sure the TTS
+                    # worker stops instead of speaking orphaned sentences.
+                    if tts_task is not None and not tts_task.done():
+                        tts_task.cancel()
+
+                self.recorder.set_barge_monitor(None, armed=False)
+                self.hub.set_capture(False)
+                listen_ms = int((stt_t0 - record_start) * 1000)
+                total_ms = int((time.perf_counter() - record_start) * 1000)
+                stats["stt"].append(stt_ms)
+                stats["llm"].append(llm_ms)
+                stats["tts"].append(tts_ms)
+                stats["turn"].append(total_ms)
+                logger.info(
+                    "[%s] [TIMING]\nwake=unknown\nlisten=%dms\nstt=%dms\nllm_total=%dms\ntool_total=unknown\ntts_total=%dms\ntotal=%.1fs",
+                    request_id,
+                    listen_ms,
+                    stt_ms,
+                    llm_ms,
+                    tts_ms,
+                    total_ms / 1000.0,
+                )
+
+                if not completed:
+                    logger.info("[%s] Speech interrupted; listening immediately.", request_id)
+                    continue
+
+                await asyncio.sleep(_ECHO_SETTLE_SECONDS)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -364,6 +476,40 @@ class VoicePipeline:
         from app.ai.agent.supervisor import process_text
 
         return await process_text(text, source="voice", request_id=request_id)
+
+    async def _process_stream(self, text: str, request_id: str = "-"):
+        """Stream version of _process that yields tokens."""
+        from app.ai.agent.supervisor import process_text_stream
+        async for token in process_text_stream(text, source="voice", request_id=request_id):
+            yield token
+
+    async def _tts_worker(self, queue: asyncio.Queue, language: str) -> bool:
+        """Synthesizes and plays sentences in arrival order.
+
+        Runs concurrently with LLM streaming: as soon as a sentence is ready it
+        is spoken, so the first audio starts long before the reply finishes.
+        Returns False when speech is interrupted (barge-in / stop / session end).
+        """
+        from app.voice.tts import speak_text
+        from app.voice.tts.base import _stop_event
+
+        completed = True
+        while True:
+            sentence = await queue.get()
+            if sentence is None:
+                break
+            if _stop_event.is_set():
+                completed = False
+                break
+            try:
+                ok = await speak_text(sentence, language=language)
+            except Exception as exc:
+                logger.warning("TTS sentence failed: %s", exc)
+                ok = False
+            if not ok:
+                completed = False
+                break
+        return completed
 
     def _remember_reply(self, reply: str) -> None:
         self._last_reply_words = {

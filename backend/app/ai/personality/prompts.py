@@ -48,15 +48,6 @@ CHAT_HINT = """This is casual conversation, not a command. Do not call tools unl
 asks something requiring real-time or external information."""
 
 
-TOOL_RULES = """Tool usage rules:
-- Use tools only when an action or external information is genuinely required; otherwise just talk.
-- Tool results are reported back verbatim by the system. NEVER invent results — only state
-  outcomes that appear in an actual tool result.
-- If a tool fails, say so honestly and offer one sensible next step.
-- When a tool result says CONFIRMATION_REQUIRED, the system has already asked the user;
-  wait for their next message."""
-
-
 def build_user_title() -> str:
     settings = get_settings()
     name = settings.user_name.strip()

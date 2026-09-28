@@ -1,9 +1,14 @@
-﻿import time
+﻿import asyncio
+import time
 
 import pytest
 
 from app.voice.mic import MicrophoneHub
-from app.voice.pipeline import is_sleep_command
+from app.voice.pipeline import (
+    VoicePipeline,
+    _extract_sentences,
+    is_sleep_command,
+)
 from app.voice.vad import EnergyVAD, PhraseRecorder, compute_rms
 
 
@@ -54,6 +59,79 @@ def test_vad_threshold_tracks_noise_floor():
 
     loud = b"\x50\x05" * 1280
     assert vad.process(loud) is True
+
+
+def test_extract_sentences_splits_all_terminators():
+    sentences, rest = _extract_sentences("हो सर, ऐकतोय. मी इथेच आहे? नक्की!")
+    assert sentences == ["हो सर, ऐकतोय.", "मी इथेच आहे?", "नक्की!"]
+    assert rest == ""
+
+
+def test_extract_sentences_keeps_partial_tail_for_next_chunk():
+    sentences, rest = _extract_sentences("हो सर, ऐकतोय. मी इथे")
+    assert sentences == ["हो सर, ऐकतोय."]
+    assert rest == " मी इथे"
+
+    # Next chunk completes the sentence, carrying the remainder forward
+    sentences, rest = _extract_sentences(rest + "च आहे")
+    assert sentences == []
+    assert rest == " मी इथेच आहे"
+
+
+def test_extract_sentences_no_terminator_keeps_everything():
+    sentences, rest = _extract_sentences("काय करतोय")
+    assert sentences == []
+    assert rest == "काय करतोय"
+
+
+@pytest.mark.asyncio
+async def test_tts_worker_speaks_sentences_in_order(monkeypatch):
+    import app.voice.tts as tts_module
+
+    spoken = []
+
+    async def fake_speak(text, language="English"):
+        spoken.append((text, language))
+        return True
+
+    monkeypatch.setattr(tts_module, "speak_text", fake_speak)
+
+    pipe = VoicePipeline.__new__(VoicePipeline)  # skip mic/wake-word init
+    queue = asyncio.Queue()
+    queue.put_nowait("हो सर, ऐकतोय.")
+    queue.put_nowait("मी इथेच आहे?")
+    queue.put_nowait(None)
+
+    completed = await pipe._tts_worker(queue, "Marathi")
+    assert completed is True
+    assert spoken == [("हो सर, ऐकतोय.", "Marathi"), ("मी इथेच आहे?", "Marathi")]
+
+
+@pytest.mark.asyncio
+async def test_tts_worker_stops_when_interrupted(monkeypatch):
+    import app.voice.tts as tts_module
+    from app.voice.tts.base import _stop_event
+
+    spoken = []
+
+    async def fake_speak(text, language="English"):
+        spoken.append(text)
+        return True
+
+    monkeypatch.setattr(tts_module, "speak_text", fake_speak)
+
+    pipe = VoicePipeline.__new__(VoicePipeline)
+    queue = asyncio.Queue()
+    queue.put_nowait("हो सर, ऐकतोय.")
+    queue.put_nowait(None)
+
+    _stop_event.set()
+    try:
+        completed = await pipe._tts_worker(queue, "English")
+    finally:
+        _stop_event.clear()
+    assert completed is False
+    assert spoken == []
 
 
 def _block(amplitude: int) -> bytes:
