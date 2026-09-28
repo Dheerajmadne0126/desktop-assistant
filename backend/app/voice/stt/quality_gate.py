@@ -7,6 +7,8 @@ _JARVIS_VARIANT = re.compile(r"jarv|जर्विस|जार्विस|ser
 _VALID_SHORT_COMMANDS = {
     "hi", "hey", "yes", "no", "ok", "okay", "stop", "pause", "play", "time",
     "haan", "nahi", "ha", "na", "bas", "nako", "thamb", "ruk", "ruko",
+    "naya", "naye", "naye", "kya", "kyaa", "kartoy", "kartay", "karatay",
+    "hello", "namaste", "namaskar", "thanks", "thank", "bye", "goodbye",
 }
 
 
@@ -51,5 +53,11 @@ def stt_quality_gate(result: STTResult) -> tuple[bool, str]:
         vowel_ratio = sum(1 for c in letters if c in _VOWELS) / max(len(letters), 1)
         if len(letters) >= 8 and vowel_ratio < 0.18:
             return False, "consonant_soup"
+
+    # For Devanagari: reject single very short tokens that aren't known commands
+    if has_devanagari:
+        words = text.split()
+        if len(words) == 1 and len(text) <= 4 and lowered not in _VALID_SHORT_COMMANDS:
+            return False, "tiny_unknown_devanagari_token"
 
     return True, "ok"

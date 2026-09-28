@@ -1,92 +1,24 @@
 import os
 import subprocess
+import time
 
 import psutil
 
 from app.tools.base import ToolResult, tool
-
-APP_MAP = {
-    "notepad": "notepad.exe",
-    "calculator": "calc.exe",
-    "calc": "calc.exe",
-    "chrome": "chrome.exe",
-    "edge": "msedge.exe",
-    "explorer": "explorer.exe",
-    "file explorer": "explorer.exe",
-    "files": "explorer.exe",
-    "vscode": "code",
-    "vs code": "code",
-    "code": "code",
-    "terminal": "wt.exe",
-    "cmd": "cmd.exe",
-    "powershell": "powershell.exe",
-    "paint": "mspaint.exe",
-    "spotify": "spotify.exe",
-    "word": "winword.exe",
-    "excel": "excel.exe",
-    "powerpoint": "powerpnt.exe",
-}
-
-PROCESS_NAME_OVERRIDES = {
-    "vscode": "Code.exe",
-    "vs code": "Code.exe",
-    "code": "Code.exe",
-}
-
-WINDOW_TITLE_FRAGMENTS = {
-    "notepad": "Notepad",
-    "calculator": "Calculator",
-    "chrome": "Chrome",
-    "edge": "Edge",
-    "vscode": "Visual Studio Code",
-    "vs code": "Visual Studio Code",
-    "code": "Visual Studio Code",
-    "spotify": "Spotify",
-    "word": "Word",
-    "excel": "Excel",
-    "powerpoint": "PowerPoint",
-    "terminal": "Terminal",
-    "cmd": "Command Prompt",
-    "powershell": "PowerShell",
-}
-
-
-def resolve_executable(app_name: str) -> str | None:
-    key = app_name.lower().strip()
-    target = APP_MAP.get(key)
-    if target:
-        return target
-    candidate = f"{key}.exe"
-    try:
-        subprocess.run(
-            ["where", candidate], capture_output=True, check=True, timeout=5
-        )
-        return candidate
-    except Exception:
-        return None
-
-
-def _find_processes(app_name: str):
-    key = app_name.lower().strip()
-    exe = PROCESS_NAME_OVERRIDES.get(key, APP_MAP.get(key, key))
-    if not exe.endswith(".exe"):
-        exe = f"{exe}.exe"
-    matches = []
-    for proc in psutil.process_iter(["pid", "name"]):
-        try:
-            name = (proc.info["name"] or "").lower()
-            if name == exe.lower():
-                matches.append(proc)
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            continue
-    return matches
+from app.tools.desktop.app_discovery import (
+    find_processes,
+    get_window_fragment,
+    invalidate_cache,
+    resolve_executable,
+)
 
 
 @tool(
     name="open_application",
     description=(
         "Opens a desktop application by name (e.g. chrome, notepad, calculator, vscode, "
-        "explorer, terminal, spotify). Desktop apps only - not websites."
+        "explorer, terminal, spotify, discord, steam, slack). Desktop apps only - not websites. "
+        "Discovers applications dynamically from Start Menu, PATH, and common install locations."
     ),
 )
 def open_application(app_name: str) -> ToolResult:
@@ -109,7 +41,7 @@ def open_application(app_name: str) -> ToolResult:
     description="Closes a running desktop application by name (e.g. chrome, notepad).",
 )
 def close_application(app_name: str) -> ToolResult:
-    procs = _find_processes(app_name)
+    procs = find_processes(app_name)
     closed = 0
     for proc in procs:
         try:
@@ -135,7 +67,7 @@ def close_application(app_name: str) -> ToolResult:
 )
 def focus_application(app_name: str) -> ToolResult:
     key = app_name.lower().strip()
-    fragment = WINDOW_TITLE_FRAGMENTS.get(key, app_name)
+    fragment = get_window_fragment(key)
 
     try:
         import pygetwindow as gw
@@ -174,8 +106,6 @@ def restart_application(app_name: str) -> ToolResult:
             message=f"Cannot restart {app_name}: it does not appear to be running.",
         )
 
-    import time
-
     time.sleep(1.0)
     open_result = open_application.func(app_name)
     if open_result.success:
@@ -183,4 +113,36 @@ def restart_application(app_name: str) -> ToolResult:
     return ToolResult(
         success=False,
         message=f"Closed {app_name} but failed to reopen it: {open_result.message}",
+    )
+
+
+@tool(
+    name="list_applications",
+    description="Lists all discoverable applications on the system.",
+)
+def list_applications() -> ToolResult:
+    from app.tools.desktop.app_discovery import get_app_cache
+
+    cache = get_app_cache()
+    apps = sorted(set(cache.keys()))
+    return ToolResult(
+        success=True,
+        message=f"Found {len(apps)} applications:\n" + "\n".join(f"- {a}" for a in apps),
+        data={"applications": apps},
+    )
+
+
+@tool(
+    name="refresh_application_cache",
+    description="Forces a refresh of the application discovery cache.",
+)
+def refresh_application_cache() -> ToolResult:
+    invalidate_cache()
+    from app.tools.desktop.app_discovery import get_app_cache
+
+    cache = get_app_cache()
+    return ToolResult(
+        success=True,
+        message=f"Application cache refreshed. {len(cache)} applications discovered.",
+        data={"count": len(cache)},
     )

@@ -1,8 +1,10 @@
 import asyncio
 import io
+import logging
 import tempfile
 import threading
 import wave
+from typing import Optional
 
 from app.core.config import get_settings
 from app.core.logging import get_logger
@@ -17,15 +19,36 @@ try:
 except ImportError:
     FASTER_WHISPER_AVAILABLE = False
 
+# huggingface_hub warns about unauthenticated requests every time the cached
+# model is touched ("Please set a HF_TOKEN..."). The model is downloaded once
+# and used offline afterwards, so silence that noise.
+logging.getLogger("huggingface_hub.utils._http").setLevel(logging.ERROR)
+
 
 class LocalWhisperSTT(STTProvider):
     """Fully offline fallback via faster-whisper. Used when cloud STT is unreachable."""
 
     name = "local_whisper"
+    
+    # Singleton instance
+    _instance: Optional["LocalWhisperSTT"] = None
+    _init_lock = threading.Lock()
+
+    def __new__(cls):
+        """Singleton pattern to ensure model is loaded only once."""
+        if cls._instance is None:
+            with cls._init_lock:
+                if cls._instance is None:
+                    cls._instance = super().__new__(cls)
+                    cls._instance._initialized = False
+        return cls._instance
 
     def __init__(self) -> None:
+        if getattr(self, "_initialized", False):
+            return
         self._model = None
         self._lock = threading.Lock()
+        self._initialized = True
 
     @property
     def available(self) -> bool:

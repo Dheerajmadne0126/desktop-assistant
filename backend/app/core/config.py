@@ -56,15 +56,15 @@ class Settings(BaseSettings):
     stt_provider: str = "sarvam"
     local_stt_model: str = "base"
     tts_provider: str = "sarvam"
-    tts_voice: str = ""
+    tts_voice: str = "priya"
     tts_sample_rate: int = 22050
     sarvam_api_key: str = ""
     sarvam_stt_model: str = "saaras:v3"
     sarvam_tts_model: str = "bulbul:v3"
-    sarvam_tts_speaker: str = "aditya"
+    sarvam_tts_speaker: str = "priya"
 
     wake_word_models: str = "hey_jarvis"
-    wake_word_threshold: float = 0.35
+    wake_word_threshold: float = 0.10
     # Voice barge-in requires headphones or AEC; on speaker+mic rigs the TTS
     # bleed falsely triggers it and cuts replies mid-sentence.
     barge_in_enabled: bool = False
@@ -74,9 +74,15 @@ class Settings(BaseSettings):
 
     voice_enabled: bool = True
     wake_greeting: str = ""
+    # Follow-up turns: after replying, JARVIS keeps listening so you can keep
+    # talking without repeating the wake word. The session ends when the user
+    # says "go to sleep"/"stop", or when repeated empty captures find no speech.
     max_followup_turns: int = 8
-    phrase_silence_ms: int = 800
-    phrase_max_seconds: int = 15
+    phrase_silence_ms: int = 200
+    phrase_max_seconds: int = 10
+    # If no speech at all within this window, stop capturing immediately
+    # instead of recording up to phrase_max_seconds of background noise.
+    phrase_no_speech_timeout_ms: int = 2000
     phrase_preroll_ms: int = 300
     empty_listen_retries: int = 2
 

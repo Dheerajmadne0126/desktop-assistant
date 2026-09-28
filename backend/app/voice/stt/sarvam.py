@@ -3,6 +3,7 @@ import httpx
 from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.voice.stt.base import STTProvider, STTResult
+from app.voice.stt.clients import get_sarvam_client
 
 logger = get_logger("stt.sarvam")
 
@@ -29,8 +30,8 @@ class SarvamSTT(STTProvider):
         files = {"file": ("audio.wav", wav_bytes, "audio/wav")}
         data = {"model": self.model, "mode": "transcribe"}
 
-        async with httpx.AsyncClient(timeout=30) as client:
-            response = await client.post(URL, headers=headers, files=files, data=data)
+        client = get_sarvam_client()
+        response = await client.post(URL, headers=headers, files=files, data=data)
 
         if response.status_code != 200:
             raise RuntimeError(f"Sarvam STT HTTP {response.status_code}: {response.text[:200]}")

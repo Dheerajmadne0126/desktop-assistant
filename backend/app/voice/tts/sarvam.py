@@ -8,8 +8,6 @@ from app.core.logging import get_logger
 from app.voice.tts.base import (
     SARVAM_LANG_CODES,
     TTSProvider,
-    cleanup,
-    make_temp_audio,
 )
 
 logger = get_logger("tts.sarvam")
@@ -24,13 +22,20 @@ class SarvamTTS(TTSProvider):
         settings = get_settings()
         self.api_key = settings.sarvam_api_key
         self.model = settings.sarvam_tts_model
-        self.speaker = settings.tts_voice or settings.sarvam_tts_speaker
+        
+        voice_pref = (settings.tts_voice or settings.sarvam_tts_speaker).lower()
+        if voice_pref == "female":
+            self.speaker = "priya"
+        elif voice_pref == "male":
+            self.speaker = "amartya"
+        else:
+            self.speaker = settings.tts_voice or settings.sarvam_tts_speaker
 
     @property
     def available(self) -> bool:
         return bool(self.api_key)
 
-    async def synthesize(self, text: str, language: str) -> str:
+    async def synthesize(self, text: str, language: str) -> bytes:
         if not self.available:
             raise RuntimeError("SARVAM_API_KEY not configured")
 
@@ -59,14 +64,4 @@ class SarvamTTS(TTSProvider):
         if not audios:
             raise RuntimeError("Sarvam TTS returned no audio")
 
-        out_path = make_temp_audio(".wav")
-        loop = asyncio.get_running_loop()
-        await loop.run_in_executor(
-            None, lambda: _write_b64(audios[0], out_path)
-        )
-        return out_path
-
-
-def _write_b64(data: str, path: str) -> None:
-    with open(path, "wb") as f:
-        f.write(base64.b64decode(data))
+        return base64.b64decode(audios[0])

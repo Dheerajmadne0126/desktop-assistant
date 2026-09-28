@@ -203,6 +203,49 @@ async def test_natural_fallback_when_everything_fails(fake_llm_factory, monkeypa
 
 
 @pytest.mark.needs_db
+async def test_short_marathi_question_reaches_llm_not_clarify(fake_llm_factory, monkeypatch):
+    """'काय करतोय' (2 words, 10 chars) is a real question: it must go to the
+    LLM, not the short-ambiguous clarify path."""
+    _patch_llms(
+        monkeypatch,
+        fake_llm_factory,
+        main_items=["इथेच आहे सर. काय हवं?"],
+    )
+    result = await supervisor.process_user_input("काय करतोय")
+    assert result.mode == "chat"
+    assert result.reply != "माफ करा सर, ते नीट समजलं नाही. थोडं स्पष्ट सांगाल का?"
+
+
+@pytest.mark.needs_db
+async def test_short_english_question_reaches_llm(fake_llm_factory, monkeypatch):
+    _patch_llms(
+        monkeypatch,
+        fake_llm_factory,
+        main_items=["Nothing much, sir. What do you need?"],
+    )
+    result = await supervisor.process_user_input("what's up")
+    assert result.mode == "chat"
+
+
+@pytest.mark.needs_db
+async def test_stream_turn_does_not_crash_on_missing_message_import(fake_llm_factory, monkeypatch):
+    """process_text_stream builds langchain messages at module level; the
+    SystemMessage/HumanMessage/AIMessage import must be present or every
+    streamed turn falls back with NameError."""
+    _patch_llms(
+        monkeypatch,
+        fake_llm_factory,
+        main_items=[{"content": "इथेच आहे सर. काय हवं?", "tool_calls": []}],
+    )
+    tokens = []
+    async for token in supervisor_module.process_text_stream("काय करतोय", source="voice"):
+        tokens.append(token)
+    joined = "".join(tokens).strip()
+    assert joined
+    assert joined != "माफ करा सर, ते नीट समजलं नाही. थोडं स्पष्ट सांगाल का?"
+
+
+@pytest.mark.needs_db
 async def test_language_persistence_after_two_marathi_turns(fake_llm_factory, monkeypatch):
     from app.memory.service import memory_service
 

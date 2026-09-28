@@ -1,16 +1,33 @@
 from app.core.logging import get_logger
-from app.tools.browser.tabs_cdp import (
+from app.tools.browser import (
     analyze_browser_tab,
+    browser_automate,
+    browser_extract_structured,
+    browser_open,
+    browser_search_and_extract,
     interact_browser_tab,
     list_browser_tabs,
+    open_website,
+    web_search,
+    youtube_play,
 )
-from app.tools.browser.web import open_website, web_search, youtube_play
 from app.tools.comms.email import check_unread_emails, send_email
 from app.tools.desktop.apps import (
     close_application,
     focus_application,
+    list_applications,
     open_application,
+    refresh_application_cache,
     restart_application,
+)
+from app.tools.desktop.projects import (
+    find_project_tool as find_project,
+    list_projects_tool as list_projects,
+    open_project,
+    open_project_terminal,
+    run_project_command,
+    get_project_summary_tool as get_project_summary,
+    refresh_project_cache,
 )
 from app.tools.desktop.power import (
     abort_shutdown,
@@ -33,6 +50,12 @@ from app.tools.memory_ops import (
     read_document_into_memory,
     recall_information,
     remember_fact,
+)
+from app.tools.context_tools import (
+    get_conversation_context,
+    clear_conversation_context,
+    get_relevant_memory,
+    add_conversation_topic,
 )
 from app.tools.devtools.dev import (
     open_project_in_vscode,
@@ -65,7 +88,16 @@ _ALL = [
     open_application,
     close_application,
     focus_application,
+    list_applications,
     restart_application,
+    refresh_application_cache,
+    find_project,
+    list_projects,
+    open_project,
+    open_project_terminal,
+    run_project_command,
+    get_project_summary,
+    refresh_project_cache,
     shutdown_pc,
     restart_pc,
     abort_shutdown,
@@ -77,6 +109,10 @@ _ALL = [
     list_browser_tabs,
     analyze_browser_tab,
     interact_browser_tab,
+    browser_open,
+    browser_search_and_extract,
+    browser_automate,
+    browser_extract_structured,
     list_directory,
     read_file,
     search_files,
@@ -93,6 +129,10 @@ _ALL = [
     run_dev_command,
     search_in_files,
     open_project_in_vscode,
+    get_conversation_context,
+    clear_conversation_context,
+    get_relevant_memory,
+    add_conversation_topic,
     set_reminder,
     set_alarm,
     set_timer,

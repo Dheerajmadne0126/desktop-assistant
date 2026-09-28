@@ -9,6 +9,7 @@ from app.api.routes.health import router as health_router
 from app.api.routes.schedules import router as schedules_router
 from app.api.routes.voice import router as voice_router
 from app.api.routes.ws_events import router as ws_events_router
+from app.api.routes.mobile import router as mobile_router
 from app.core.config import get_settings
 from app.core.events import event_bus
 from app.core.logging import get_logger, setup_logging
@@ -63,7 +64,17 @@ async def lifespan(app: FastAPI):
         except Exception as exc:
             logger.warning("Vector warmup skipped: %s", exc)
 
+    async def _warm_tts():
+        try:
+            from app.voice.tts.edge import EdgeTTS
+            edge = EdgeTTS()
+            await edge.synthesize("warmup", "English")
+            logger.info("Edge TTS warmed up.")
+        except Exception as exc:
+            logger.warning("TTS warmup skipped: %s", exc)
+
     asyncio.create_task(_warm_vector_memory())
+    asyncio.create_task(_warm_tts())
 
     logger.info("%s backend started (env=%s).", settings.app_name, settings.environment)
     yield
@@ -80,6 +91,12 @@ async def lifespan(app: FastAPI):
         from app.voice.pipeline import voice_pipeline
 
         voice_pipeline.stop()
+    except Exception:
+        pass
+    try:
+        from app.voice.stt.clients import close_clients
+
+        await close_clients()
     except Exception:
         pass
     await conversation_manager.close_all()
@@ -104,3 +121,4 @@ app.include_router(ws_events_router)
 app.include_router(chat_router)
 app.include_router(schedules_router)
 app.include_router(voice_router)
+app.include_router(mobile_router)

@@ -2,35 +2,43 @@ import asyncio
 import os
 
 import pytest
+from sqlalchemy.engine import make_url
 
-from urllib.parse import quote_plus
-
-_PG_PASSWORD = quote_plus("Dheeruxz@01")
-_TEST_DB_URL = (
-    f"postgresql+asyncpg://postgres:{_PG_PASSWORD}@127.0.0.1:5432/jarvis_test"
-)
-
-os.environ["DATABASE_URL"] = _TEST_DB_URL
-os.environ["ENVIRONMENT"] = "test"
-os.environ["VOICE_ENABLED"] = "false"
-os.environ.pop("AI_API_KEY", None)
-os.environ["LOG_DIR"] = os.path.join(os.path.dirname(__file__), "..", ".test_logs")
+from app.core.config import get_settings
 
 TEST_DB = "jarvis_test"
 
-DB_AVAILABLE = True
+# Never hardcode credentials in this file: the test database reuses the exact
+# user/password/host from the project's real DATABASE_URL (backend/.env) and
+# only swaps the database name to a dedicated test database.
+
+
+def _base_url() -> str:
+    get_settings.cache_clear()
+    return get_settings().database_url
 
 
 def _ensure_test_database() -> bool:
     try:
         import asyncpg
 
+        base = make_url(_base_url())
+        test_url = base.set(database=TEST_DB).render_as_string(hide_password=False)
+
+        os.environ["DATABASE_URL"] = test_url
+        os.environ["ENVIRONMENT"] = "test"
+        os.environ["VOICE_ENABLED"] = "false"
+        os.environ.pop("AI_API_KEY", None)
+        os.environ["LOG_DIR"] = os.path.join(
+            os.path.dirname(__file__), "..", ".test_logs"
+        )
+
         async def _create():
             conn = await asyncpg.connect(
-                host="localhost",
-                port=5432,
-                user="postgres",
-                password="Dheeruxz@01",
+                host=base.host or "localhost",
+                port=base.port or 5432,
+                user=base.username,
+                password=base.password,
                 database="postgres",
             )
             try:
@@ -51,10 +59,6 @@ def _ensure_test_database() -> bool:
 DB_AVAILABLE = _ensure_test_database()
 
 if DB_AVAILABLE:
-    from sqlalchemy.ext.asyncio import AsyncEngine  # noqa: F401
-
-    from app.core.config import get_settings
-
     get_settings.cache_clear()
 
     from app.db.base import Base
@@ -89,7 +93,8 @@ async def _clean_tables():
         await conn.execute(
             text(
                 "TRUNCATE conversations, messages, memories, preferences, "
-                "scheduled_tasks, pending_confirmations, tool_executions, task_runs CASCADE"
+                "scheduled_tasks, pending_confirmations, tool_executions, task_runs "
+                "CASCADE"
             )
         )
     yield
@@ -119,13 +124,31 @@ def fake_llm_factory():
             if isinstance(item, str):
                 return FakeResponse(item)
             if isinstance(item, dict):
-                return SimpleNamespace(content=item.get("content", ""), tool_calls=item.get("tool_calls", []))
+                return SimpleNamespace(
+                    content=item.get("content", ""),
+                    tool_calls=item.get("tool_calls", []),
+                )
             return item
 
         def invoke(self, prompt, *args, **kwargs):
             import asyncio
 
             return asyncio.get_event_loop().run_until_complete(self.ainvoke(prompt))
+
+        async def astream(self, prompt, *args, **kwargs):
+            self.calls.append(prompt if isinstance(prompt, str) else str(prompt))
+            if not self._items:
+                return
+            item = self._items.pop(0)
+            if isinstance(item, str):
+                yield SimpleNamespace(content=item, tool_calls=[])
+            elif isinstance(item, dict):
+                yield SimpleNamespace(
+                    content=item.get("content", ""),
+                    tool_calls=item.get("tool_calls", []),
+                )
+            else:
+                yield item
 
     def factory(*items):
         return FakeLLM(list(items))

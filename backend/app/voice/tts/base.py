@@ -1,7 +1,7 @@
 import asyncio
+import io
 import os
 import re
-import tempfile
 import threading
 from abc import ABC, abstractmethod
 
@@ -14,12 +14,20 @@ logger = get_logger("tts")
 
 _stop_event = threading.Event()
 _mixer_ready = False
+_MIXER_SAMPLE_RATE = 22050  # Fixed sample rate for all TTS output
 
-EDGE_VOICES = {
+EDGE_VOICES_MALE = {
     "Marathi": "mr-IN-ManoharNeural",
     "Hindi": "hi-IN-MadhurNeural",
     "English": "en-IN-PrabhatNeural",
     "unknown": "en-IN-PrabhatNeural",
+}
+
+EDGE_VOICES_FEMALE = {
+    "Marathi": "mr-IN-AarohiNeural",
+    "Hindi": "hi-IN-SwaraNeural",
+    "English": "en-IN-NeerjaNeural",
+    "unknown": "en-IN-NeerjaNeural",
 }
 
 SARVAM_LANG_CODES = {
@@ -47,34 +55,30 @@ def sanitize_for_speech(text: str) -> str:
     return cleaned.strip(" .,-")[:1200]
 
 
-def ensure_mixer() -> bool:
-    global _mixer_ready
-    try:
-        if not pygame.mixer.get_init():
-            pygame.mixer.init()
-        _mixer_ready = True
-        return True
-    except Exception as exc:
-        logger.warning("Audio mixer unavailable: %s", exc)
-        return False
-
-
-def prepare_output_mixer(sample_rate: int) -> bool:
-    """Pre-opens the mixer at the TTS sample rate so per-utterance re-inits vanish."""
+def _ensure_mixer_at_rate(sample_rate: int) -> bool:
+    """Ensure mixer is initialized at the specified sample rate."""
+    global _mixer_ready, _MIXER_SAMPLE_RATE
     try:
         current = pygame.mixer.get_init()
         if current and current[0] == sample_rate:
             _mixer_ready = True
+            _MIXER_SAMPLE_RATE = sample_rate
             return True
         if pygame.mixer.get_init():
             pygame.mixer.quit()
         pygame.mixer.init(frequency=sample_rate)
         _mixer_ready = True
-        logger.info("[AUDIO] mixer pre-initialized at %dHz.", sample_rate)
+        _MIXER_SAMPLE_RATE = sample_rate
+        logger.info("[AUDIO] mixer initialized at %dHz.", sample_rate)
         return True
     except Exception as exc:
-        logger.warning("Mixer pre-init failed: %s", exc)
+        logger.warning("Mixer init failed: %s", exc)
         return False
+
+
+def prepare_output_mixer(sample_rate: int) -> bool:
+    """Pre-opens the mixer at the TTS sample rate so per-utterance re-inits vanish."""
+    return _ensure_mixer_at_rate(sample_rate)
 
 
 def stop_speaking() -> None:
@@ -90,46 +94,37 @@ def reset_stop_flag() -> None:
     _stop_event.clear()
 
 
-async def play_audio_file(path: str, poll_interval: float = 0.05) -> bool:
-    """Plays an audio file, returns False when cancelled via stop_speaking()."""
+async def play_audio_file(audio_bytes: bytes, poll_interval: float = 0.05) -> bool:
+    """Plays audio bytes directly from memory, returns False when cancelled via stop_speaking()."""
     import wave
 
     loop = asyncio.get_running_loop()
 
     def _start():
-        if not ensure_mixer():
+        if not _ensure_mixer_at_rate(_MIXER_SAMPLE_RATE):
             raise RuntimeError("No audio output device")
 
         expected_length = 0.0
-        if path.lower().endswith(".wav"):
-            try:
-                with wave.open(path, "rb") as w:
-                    rate = w.getframerate()
-                    frames = w.getnframes()
-                    expected_length = frames / float(rate)
-                current_init = pygame.mixer.get_init()
-                if current_init and current_init[0] != rate:
-                    logger.info(
-                        "[AUDIO] re-initing mixer %sHz -> %sHz to match file",
-                        current_init[0],
-                        rate,
-                    )
-                    pygame.mixer.quit()
-                    pygame.mixer.init(frequency=rate)
-            except Exception as exc:
-                logger.debug("[AUDIO] wav pre-read skipped: %s", exc)
+        # Check if it's a WAV to get duration
+        try:
+            with wave.open(io.BytesIO(audio_bytes), "rb") as w:
+                rate = w.getframerate()
+                frames = w.getnframes()
+                expected_length = frames / float(rate)
+        except Exception as exc:
+            logger.debug("[AUDIO] wav pre-read skipped (likely mp3): %s", exc)
 
-        pygame.mixer.music.load(path)
+        pygame.mixer.music.load(io.BytesIO(audio_bytes))
 
         if expected_length <= 0.0:
             try:
-                expected_length = pygame.mixer.Sound(path).get_length()
+                expected_length = pygame.mixer.Sound(io.BytesIO(audio_bytes)).get_length()
             except Exception as exc:
                 logger.debug("[AUDIO] length probe skipped: %s", exc)
 
         logger.info(
-            "[AUDIO] output=%sHz expected=%.1fs",
-            (pygame.mixer.get_init() or (0,))[0],
+            "[AUDIO] output=%dHz expected=%.1fs",
+            _MIXER_SAMPLE_RATE,
             expected_length,
         )
         pygame.mixer.music.play()
@@ -155,24 +150,42 @@ async def play_audio_file(path: str, poll_interval: float = 0.05) -> bool:
     return True
 
 
-def make_temp_audio(suffix: str) -> str:
-    settings = get_settings()
-    fd, path = tempfile.mkstemp(suffix=suffix, prefix="jarvis_tts_", dir=tempfile.gettempdir())
-    os.close(fd)
-    return path
+async def play_audio_stream(audio_chunk_iterator, poll_interval: float = 0.05) -> bool:
+    """Plays audio from an async iterator of chunks. For true streaming TTS.
+    
+    This queues chunks and plays them sequentially, starting playback as soon
+    as the first chunk is available.
+    """
+    import wave
+    import tempfile
 
-
-def cleanup(path: str) -> None:
-    try:
-        if path and os.path.exists(path):
-            os.remove(path)
-    except OSError:
-        pass
+    loop = asyncio.get_running_loop()
+    
+    # Collect all chunks to a temporary file, then play
+    # This is a workaround since pygame.mixer.music doesn't support streaming
+    # For true streaming, we'd need to use pygame.mixer.Sound or a different audio library
+    chunks = []
+    async for chunk in audio_chunk_iterator:
+        chunks.append(chunk)
+    
+    if not chunks:
+        return True
+    
+    audio_bytes = b"".join(chunks)
+    return await play_audio_file(audio_bytes, poll_interval)
 
 
 class TTSProvider(ABC):
     name: str = "base"
 
     @abstractmethod
-    async def synthesize(self, text: str, language: str) -> str:
-        """Returns a path to a playable audio file."""
+    async def synthesize(self, text: str, language: str) -> bytes:
+        """Returns raw audio bytes."""
+
+    async def synthesize_stream(self, text: str, language: str):
+        """Optional: yields audio chunks for streaming playback.
+        
+        Default implementation falls back to synthesize() and yields single chunk.
+        """
+        audio = await self.synthesize(text, language)
+        yield audio

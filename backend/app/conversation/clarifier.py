@@ -82,8 +82,6 @@ class ClarificationManager:
         tool = registry.get(state.tool_name)
         properties = tool.parameters_schema.get("properties", {}) if tool else {}
         previously_collected = set(state.collected.keys())
-        tool = registry.get(state.tool_name)
-        properties = tool.parameters_schema.get("properties", {}) if tool else {}
 
         prompt = (
             "You are a slot-filling extractor for an assistant.\n"
@@ -107,10 +105,6 @@ class ClarificationManager:
             data = json.loads(content)
             extracted = data.get("extracted", {}) or {}
             still_missing = data.get("still_missing")
-        except Exception as exc:
-            logger.warning("Slot extraction failed (%s); falling back.", exc)
-            extracted = {state.missing[0]: user_text.strip()} if state.missing else {}
-            still_missing = None
         except Exception as exc:
             logger.warning("Slot extraction failed (%s); falling back.", exc)
             extracted = {state.missing[0]: user_text.strip()} if state.missing else {}

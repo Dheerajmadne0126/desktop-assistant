@@ -129,7 +129,7 @@ def run_dev_command(command: str, cwd: str = "") -> ToolResult:
 
 
 @tool(
-    name="search_code",
+    name="search_in_files",
     description=(
         "Searches file CONTENTS (like grep) inside Desktop/Documents/Downloads or a given "
         "subfolder, skipping node_modules/.git etc. Returns matching file:line snippets."
